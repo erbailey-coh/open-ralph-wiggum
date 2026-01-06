@@ -17,7 +17,7 @@ Execute the following to check and cancel:
 
 ```bash
 if [ -f .opencode/ralph-loop.state.json ]; then
-  iteration=$(cat .opencode/ralph-loop.state.json | grep -o '"iteration":[0-9]*' | cut -d: -f2)
+  iteration=$(cat .opencode/ralph-loop.state.json | grep -o '"iteration": *[0-9]*' | grep -o '[0-9]*')
   rm .opencode/ralph-loop.state.json
   echo "Cancelled Ralph loop (was at iteration ${iteration:-unknown})"
 else

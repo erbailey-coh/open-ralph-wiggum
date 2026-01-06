@@ -147,7 +147,6 @@ function loadState(): RalphState | null {
 
 function clearState(): void {
   if (existsSync(statePath)) {
-    Bun.file(statePath).delete;
     try {
       require("fs").unlinkSync(statePath);
     } catch {}

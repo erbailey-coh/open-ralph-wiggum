@@ -120,14 +120,23 @@ export const RalphWiggumPlugin: Plugin = async (ctx) => {
           return;
         }
 
-        // Check max iterations
-        if (state.maxIterations > 0 && state.iteration >= state.maxIterations) {
+        // Check max iterations (use > to match CLI behavior)
+        if (state.maxIterations > 0 && state.iteration > state.maxIterations) {
           console.log(`\n🛑 Ralph loop: Max iterations (${state.maxIterations}) reached.`);
           clearState(directory);
           return;
         }
 
-        // Continue the loop
+        // Get the current session ID from the event if available
+        const sessionId = (event as any).sessionId || state.sessionId;
+
+        // Only proceed if we have a valid session to send prompts to
+        if (!sessionId || !client?.session?.prompt) {
+          console.log(`\n⚠️ Ralph loop: No session available to continue loop`);
+          return;
+        }
+
+        // Continue the loop - only increment after verifying we can proceed
         isProcessing = true;
         state.iteration++;
         saveState(directory, state);
@@ -135,20 +144,15 @@ export const RalphWiggumPlugin: Plugin = async (ctx) => {
         console.log(`\n🔄 Ralph loop: Starting iteration ${state.iteration}${state.maxIterations > 0 ? ` / ${state.maxIterations}` : ""}`);
 
         try {
-          // Get the current session ID from the event if available
-          const sessionId = (event as any).sessionId || state.sessionId;
+          // Send the next iteration prompt using the SDK
+          const iterationPrompt = buildIterationPrompt(state);
 
-          if (sessionId && client?.session?.prompt) {
-            // Send the next iteration prompt using the SDK
-            const iterationPrompt = buildIterationPrompt(state);
-
-            await client.session.prompt({
-              path: { id: sessionId },
-              body: {
-                parts: [{ type: "text", text: iterationPrompt }],
-              },
-            });
-          }
+          await client.session.prompt({
+            path: { id: sessionId },
+            body: {
+              parts: [{ type: "text", text: iterationPrompt }],
+            },
+          });
         } catch (error) {
           console.error(`\n❌ Ralph loop error:`, error);
           // Don't clear state on error - let user decide

@@ -1,7 +1,7 @@
 {
   "name": "opencode-ralph-wiggum",
   "version": "1.0.0",
-  "description": "Ralph Wiggum technique for OpenCode - iterative AI development loops",
+  "description": "Ralph Wiggum technique for OpenCode - iterative AI development loops with self-correcting agents",
   "type": "module",
   "bin": {
     "ralph": "./ralph.ts"
@@ -17,10 +17,29 @@
     "ai",
     "ralph-wiggum",
     "iterative-development",
-    "automation"
+    "automation",
+    "ai-agent",
+    "coding-assistant",
+    "llm",
+    "claude",
+    "gpt",
+    "self-correcting",
+    "autonomous",
+    "developer-tools",
+    "cli",
+    "bun",
+    "typescript"
   ],
-  "author": "",
+  "author": "Th0rgal",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Th0rgal/opencode-ralph-wiggum.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Th0rgal/opencode-ralph-wiggum/issues"
+  },
+  "homepage": "https://github.com/Th0rgal/opencode-ralph-wiggum#readme",
   "devDependencies": {
     "@types/bun": "^1.3.5"
   }

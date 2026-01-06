@@ -8,6 +8,12 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/Th0rgal/opencode-ralph-wiggum/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/Th0rgal/opencode-ralph-wiggum"><img src="https://img.shields.io/badge/built%20with-Bun%20%2B%20TypeScript-f472b6.svg" alt="Built with Bun + TypeScript"></a>
+  <a href="https://github.com/Th0rgal/opencode-ralph-wiggum/releases"><img src="https://img.shields.io/github/v/release/Th0rgal/opencode-ralph-wiggum?include_prereleases" alt="Release"></a>
+</p>
+
+<p align="center">
   <a href="#what-is-ralph">What is Ralph?</a> •
   <a href="#installation">Installation</a> •
   <a href="#quick-start">Quick Start</a> •

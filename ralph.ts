@@ -93,7 +93,11 @@ for (let i = 0; i < args.length; i++) {
     model = val;
   } else if (arg === "--no-commit") {
     autoCommit = false;
-  } else if (!arg.startsWith("-")) {
+  } else if (arg.startsWith("-")) {
+    console.error(`Error: Unknown option: ${arg}`);
+    console.error("Run 'ralph --help' for available options");
+    process.exit(1);
+  } else {
     promptParts.push(arg);
   }
 }

@@ -197,6 +197,15 @@ function escapeRegex(str: string): string {
 
 // Main loop
 async function runRalphLoop(): Promise<void> {
+  // Check if a loop is already running
+  const existingState = loadState();
+  if (existingState?.active) {
+    console.error(`Error: A Ralph loop is already active (iteration ${existingState.iteration})`);
+    console.error(`Started at: ${existingState.startedAt}`);
+    console.error(`To cancel it, press Ctrl+C in its terminal or delete ${statePath}`);
+    process.exit(1);
+  }
+
   console.log(`
 ╔══════════════════════════════════════════════════════════════════╗
 ║                    Ralph Wiggum Loop                            ║

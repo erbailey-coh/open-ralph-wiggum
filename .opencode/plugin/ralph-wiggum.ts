@@ -165,11 +165,23 @@ export const RalphWiggumPlugin: Plugin = async (ctx) => {
       if (event.type === "message.updated") {
         const state = loadState(directory);
         if (state && state.active) {
-          // Extract text content from the message event
-          const content = JSON.stringify(event);
-          if (checkCompletion(content, state.completionPromise)) {
-            state.lastOutput = content;
-            saveState(directory, state);
+          // Only check actual message content from assistant, not prompt instructions
+          const msg = event as any;
+          if (msg.role === "assistant" && msg.content) {
+            // Extract text from content parts if it's an array, or use directly if string
+            let textContent = "";
+            if (typeof msg.content === "string") {
+              textContent = msg.content;
+            } else if (Array.isArray(msg.content)) {
+              textContent = msg.content
+                .filter((part: any) => part.type === "text")
+                .map((part: any) => part.text || "")
+                .join("");
+            }
+            if (textContent && checkCompletion(textContent, state.completionPromise)) {
+              state.lastOutput = textContent;
+              saveState(directory, state);
+            }
           }
         }
       }

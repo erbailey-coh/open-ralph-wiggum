@@ -1,8 +1,9 @@
 {
   "name": "@th0rgal/ralph-wiggum",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Ralph Wiggum technique for OpenCode - iterative AI development loops with self-correcting agents",
   "type": "module",
+  "main": ".opencode/plugin/ralph-wiggum.ts",
   "bin": {
     "ralph": "./ralph.ts"
   },

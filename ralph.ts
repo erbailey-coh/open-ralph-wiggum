@@ -137,7 +137,7 @@ function clearHistory(): void {
 
 // Status command
 if (args.includes("--status")) {
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf-8")) : null;
+  const state = loadState();
   const history = loadHistory();
   const context = existsSync(contextPath) ? readFileSync(contextPath, "utf-8").trim() : null;
 
@@ -236,7 +236,7 @@ if (addContextIdx !== -1) {
   console.log(`✅ Context added for next iteration`);
   console.log(`   File: ${contextPath}`);
 
-  const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf-8")) : null;
+  const state = loadState();
   if (state?.active) {
     console.log(`   Will be picked up in iteration ${state.iteration + 1}`);
   } else {
@@ -861,6 +861,9 @@ async function runRalphLoop(): Promise<void> {
     console.log(`\n🔄 Iteration ${state.iteration}${maxIterations > 0 ? ` / ${maxIterations}` : ""}`);
     console.log("─".repeat(68));
 
+    // Capture context at start of iteration (to only clear what was consumed)
+    const contextAtStart = loadContext();
+
     // Build the prompt
     const fullPrompt = buildPrompt(state);
     const iterationStart = Date.now();
@@ -958,6 +961,8 @@ async function runRalphLoop(): Promise<void> {
 
       if (iterationDuration < 30000) { // Less than 30 seconds
         history.struggleIndicators.shortIterations++;
+      } else {
+        history.struggleIndicators.shortIterations = 0; // Reset on normal-length iteration
       }
 
       for (const error of errors) {
@@ -1010,8 +1015,8 @@ async function runRalphLoop(): Promise<void> {
         break;
       }
 
-      // Clear context after it's been consumed (at end of iteration)
-      if (loadContext()) {
+      // Clear context only if it was present at iteration start (preserve mid-iteration additions)
+      if (contextAtStart) {
         console.log(`📝 Context was consumed this iteration`);
         clearContext();
       }

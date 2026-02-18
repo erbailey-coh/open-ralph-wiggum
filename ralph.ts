@@ -9,6 +9,7 @@
 import { $ } from "bun";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join } from "path";
+import { homedir } from "os";
 
 const VERSION = "1.2.1";
 
@@ -25,6 +26,60 @@ const tasksPath = join(stateDir, "ralph-tasks.md");
 const AGENT_TYPES = ["opencode", "claude-code", "codex", "copilot"] as const;
 type AgentType = (typeof AGENT_TYPES)[number];
 
+/**
+ * Config file schema for .ralph.json.
+ * All fields are optional — unset fields fall back to their CLI defaults.
+ * CLI arguments always override config file values.
+ *
+ * Lookup order:
+ *   1. .ralph.json in the current working directory (project-level)
+ *   2. ~/.ralph.json (global user defaults)
+ */
+interface RalphConfig {
+  agent?: AgentType;
+  model?: string;
+  minIterations?: number;
+  maxIterations?: number;
+  completionPromise?: string;
+  abortPromise?: string;
+  taskPromise?: string;
+  promptTemplate?: string;
+  rotation?: string;
+  tasks?: boolean;
+  maxNoProgressIterations?: number;
+  stream?: boolean;
+  autoCommit?: boolean;
+  allowAllPermissions?: boolean;
+  extraFlags?: string[];
+}
+
+/**
+ * Load .ralph.json from the project directory, falling back to ~/.ralph.json.
+ * Returns an empty object if neither file exists.
+ * Exits with an error message if a config file is found but is invalid JSON.
+ */
+function loadRalphConfig(): RalphConfig {
+  const candidates = [
+    join(process.cwd(), ".ralph", "config.json"),
+    join(homedir(), ".ralph.json"),
+  ];
+
+  for (const configPath of candidates) {
+    if (!existsSync(configPath)) continue;
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw) as RalphConfig;
+      return parsed;
+    } catch {
+      console.error(`Error: Failed to parse config file: ${configPath}`);
+      console.error("Ensure it is valid JSON.");
+      process.exit(1);
+    }
+  }
+
+  return {};
+}
+
 type AgentEnvOptions = { filterPlugins?: boolean; allowAllPermissions?: boolean };
 
 type AgentBuildArgsOptions = { allowAllPermissions?: boolean; extraFlags?: string[]; streamOutput?: boolean };
@@ -33,7 +88,7 @@ interface AgentConfig {
   type: AgentType;
   command: string;
   buildArgs: (prompt: string, model: string, options?: AgentBuildArgsOptions) => string[];
-  buildEnv: (options: AgentEnvOptions) => Record<string, string>;
+  buildEnv: (options: AgentEnvOptions) => Record<string, string | undefined>;
   parseToolOutput: (line: string) => string | null;
   configName: string;
 }
@@ -93,7 +148,7 @@ const AGENTS: Record<AgentType, AgentConfig> = {
     buildArgs: (promptText, modelName, options) => {
       const cmdArgs = ["-p", promptText];
       if (options?.streamOutput) {
-        cmdArgs.push("--output-format", "stream-json", "--include-partial-messages");
+        cmdArgs.push("--verbose", "--output-format", "stream-json", "--include-partial-messages");
       }
       if (modelName) {
         cmdArgs.push("--model", modelName);
@@ -170,6 +225,15 @@ const AGENTS: Record<AgentType, AgentConfig> = {
 };
 // Parse arguments
 const args = process.argv.slice(2);
+const originalArgCount = args.length;
+
+// Support `ralph run` as an explicit fast-path subcommand
+// (strips "run" so the rest of the pipeline sees a normal arg list)
+let fastPath = false;
+if (args[0] === "run") {
+  fastPath = true;
+  args.shift();
+}
 
 if (args.includes("--help") || args.includes("-h")) {
   console.log(`
@@ -177,6 +241,7 @@ Ralph Wiggum Loop - Iterative AI development with AI agents
 
 Usage:
   ralph "<prompt>" [options]
+  ralph run                   Fast path: auto-detect .ralph/ config, tasks, and template
   ralph --prompt-file <path> [options]
 
 Arguments:
@@ -198,6 +263,8 @@ Options:
                       When used, --agent and --model are ignored
   --prompt-file, --file, -f  Read prompt content from a file
   --prompt-template PATH  Use custom prompt template (supports variables)
+  --max-no-progress N Break the loop after N consecutive iterations with no file changes
+                      (default: 3, set to 0 to disable)
   --no-stream         Buffer agent output and print at the end
   --verbose-tools     Print every tool line (disable compact tool summary)
   --no-plugins        Disable non-auth OpenCode plugins for this run (opencode only)
@@ -209,6 +276,10 @@ Options:
   --                  Pass all remaining arguments to the agent (e.g., -- --extra-tags)
 
 Commands:
+  run                 Fast path: use .ralph/config.json, auto-enable tasks mode if
+                      ralph-tasks.md exists, and auto-load prompt-template.md as prompt.
+                      Equivalent to running ralph with no arguments in an initialized project.
+  --init              Scaffold .ralph/ directory with config, tasks file, and .gitignore
   --status            Show current Ralph loop status and history
   --status --tasks    Show status including current task list
   --add-context TEXT  Add context for the next iteration (or edit .ralph/ralph-context.md)
@@ -244,6 +315,116 @@ Learn more: https://ghuntley.com/ralph/
 
 if (args.includes("--version") || args.includes("-v")) {
   console.log(`ralph ${VERSION}`);
+  process.exit(0);
+}
+
+if (args.includes("--init")) {
+  const ralphDir = join(process.cwd(), ".ralph");
+
+  // Create .ralph/ directory
+  if (!existsSync(ralphDir)) {
+    mkdirSync(ralphDir, { recursive: true });
+    console.log(`✅ Created .ralph/`);
+  } else {
+    console.log(`ℹ️  .ralph/ already exists`);
+  }
+
+  // Create .ralph/.gitignore to exclude runtime state files
+  const gitignorePath = join(ralphDir, ".gitignore");
+  if (!existsSync(gitignorePath)) {
+    writeFileSync(
+      gitignorePath,
+      [
+        "# Ralph runtime state — generated files, not source",
+        "ralph-loop.state.json",
+        "ralph-history.json",
+        "ralph-context.md",
+        "ralph-opencode.config.json",
+        "",
+      ].join("\n"),
+    );
+    console.log(`✅ Created .ralph/.gitignore`);
+  } else {
+    console.log(`ℹ️  .ralph/.gitignore already exists, skipping`);
+  }
+
+  // Create .ralph/config.json with commented defaults
+  const configPath = join(ralphDir, "config.json");
+  if (!existsSync(configPath)) {
+    const defaultConfig: RalphConfig = {
+      agent: "claude-code",
+      model: "",
+      promptTemplate: ".ralph/prompt-template.md",
+      allowAllPermissions: true,
+      autoCommit: true,
+    };
+    writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2) + "\n");
+    console.log(`✅ Created .ralph/config.json`);
+  } else {
+    console.log(`ℹ️  .ralph/config.json already exists, skipping`);
+  }
+
+  // Create .ralph/ralph-tasks.md with placeholder content
+  const tasksFilePath = join(ralphDir, "ralph-tasks.md");
+  if (!existsSync(tasksFilePath)) {
+    writeFileSync(
+      tasksFilePath,
+      [
+        "# Ralph Tasks",
+        "",
+        "Add tasks below. Use `ralph --add-task \"description\"` or edit this file directly.",
+        "",
+        "Status markers: [ ] todo  [/] in progress  [x] done",
+        "",
+        "- [ ] Your first task",
+        "",
+      ].join("\n"),
+    );
+    console.log(`✅ Created .ralph/ralph-tasks.md`);
+  } else {
+    console.log(`ℹ️  .ralph/ralph-tasks.md already exists, skipping`);
+  }
+
+  // Create .ralph/prompt-template.md with a generic starting template
+  const promptTemplatePath = join(ralphDir, "prompt-template.md");
+  if (!existsSync(promptTemplatePath)) {
+    writeFileSync(
+      promptTemplatePath,
+      [
+        "# Iteration {{iteration}} / {{max_iterations}}",
+        "",
+        "## Goal",
+        "",
+        "{{prompt}}",
+        "",
+        "## Task tracking",
+        "",
+        "{{task_section}}",
+        "",
+        "## Instructions",
+        "",
+        "1. If no task is marked `[/]`, mark the next `[ ]` task as `[/]` in",
+        "   `.ralph/ralph-tasks.md` before starting work.",
+        "2. Complete the current task.",
+        "3. When the task is fully done and verified:",
+        "   a. Mark it `[x]` in `.ralph/ralph-tasks.md`.",
+        "   b. Output: <promise>{{task_promise}}</promise>",
+        "4. When ALL tasks are `[x]`, output: <promise>{{completion_promise}}</promise>",
+        "",
+        "{{context}}",
+      ].join("\n"),
+    );
+    console.log(`✅ Created .ralph/prompt-template.md`);
+  } else {
+    console.log(`ℹ️  .ralph/prompt-template.md already exists, skipping`);
+  }
+
+  console.log(`
+Next steps:
+  1. Edit .ralph/config.json  — set your agent, model, and other defaults
+  2. Edit .ralph/ralph-tasks.md  — add your tasks
+  3. Run: ralph --tasks "<your overall goal>"
+`);
   process.exit(0);
 }
 
@@ -344,8 +525,8 @@ if (args.includes("--status")) {
       const activeIndex = state.rotation && state.rotation.length > 0
         ? ((state.rotationIndex ?? 0) % state.rotation.length + state.rotation.length) % state.rotation.length
         : 0;
-      console.log(`\n   Rotation (position ${activeIndex + 1}/${state.rotation.length}):`);
-      state.rotation.forEach((entry, index) => {
+      console.log(`\n   Rotation (position ${activeIndex + 1}/${state.rotation!.length}):`);
+      state.rotation!.forEach((entry, index) => {
         const activeLabel = index === activeIndex ? "  **ACTIVE**" : "";
         console.log(`   ${index + 1}. ${entry}${activeLabel}`);
       });
@@ -703,34 +884,40 @@ function allTasksComplete(tasks: Task[]): boolean {
   return tasks.length > 0 && tasks.every(t => t.status === "complete");
 }
 
-// Parse options
+// Load config file (.ralph.json in cwd, then ~/.ralph.json)
+const config = loadRalphConfig();
+
+// Parse options — config values serve as defaults; CLI args override them
 let prompt = "";
-let minIterations = 1; // default: 1 iteration minimum
-let maxIterations = 0; // 0 = unlimited
-let completionPromise = "COMPLETE";
-let abortPromise = ""; // Optional abort promise for early exit on precondition failure
-let tasksMode = false;
-let taskPromise = "READY_FOR_NEXT_TASK";
-let model = "";
-let agentType: AgentType = "opencode";
-let rotationInput = "";
+let minIterations = config.minIterations ?? 1;
+let maxIterations = config.maxIterations ?? 0; // 0 = unlimited
+let completionPromise = config.completionPromise ?? "COMPLETE";
+let abortPromise = config.abortPromise ?? ""; // Optional abort promise for early exit on precondition failure
+let tasksMode = config.tasks ?? false;
+let maxNoProgressIterations = config.maxNoProgressIterations ?? 3; // 0 = disabled
+let taskPromise = config.taskPromise ?? "READY_FOR_NEXT_TASK";
+let model = config.model ?? "";
+let agentType: AgentType = config.agent ?? "opencode";
+let rotationInput = config.rotation ?? "";
 let rotation: string[] | null = null;
-let autoCommit = true;
+let autoCommit = config.autoCommit ?? true;
 let disablePlugins = false;
-let allowAllPermissions = true;
+let allowAllPermissions = config.allowAllPermissions ?? true;
 let promptFile = "";
-let promptTemplatePath = ""; // Custom prompt template file
-let streamOutput = true;
+let promptTemplatePath = config.promptTemplate ?? ""; // Custom prompt template file
+let streamOutput = config.stream ?? true;
 let verboseTools = false;
 let promptSource = "";
+let extraAgentFlagsFromConfig: string[] = config.extraFlags ?? [];
 
 const promptParts: string[] = [];
-let extraAgentFlags: string[] = [];
+// Seed extra flags from config; CLI flags after -- are appended below
+let extraAgentFlags: string[] = [...extraAgentFlagsFromConfig];
 const doubleDashIndex = args.indexOf("--");
 
 // Extract extra flags after --
 if (doubleDashIndex !== -1) {
-  extraAgentFlags = args.slice(doubleDashIndex + 1);
+  extraAgentFlags.push(...args.slice(doubleDashIndex + 1));
   // Remove -- and everything after it from args processing
   args.splice(doubleDashIndex);
 }
@@ -842,6 +1029,13 @@ for (let i = 0; i < args.length; i++) {
     streamOutput = true;
   } else if (arg === "--verbose-tools") {
     verboseTools = true;
+  } else if (arg === "--max-no-progress") {
+    const val = args[++i];
+    if (!val || isNaN(parseInt(val))) {
+      console.error("Error: --max-no-progress requires a number (0 to disable)");
+      process.exit(1);
+    }
+    maxNoProgressIterations = parseInt(val);
   } else if (arg === "--no-commit") {
     autoCommit = false;
   } else if (arg === "--no-plugins") {
@@ -908,6 +1102,31 @@ if (!prompt) {
   const existingState = loadState();
   if (existingState?.active) {
     prompt = existingState.prompt;
+  } else if (fastPath || originalArgCount === 0) {
+    // Fast path: infer everything from the .ralph/ project directory.
+    // Triggered by `ralph run` or bare `ralph` with no arguments.
+    const hasTasksFile = existsSync(tasksPath);
+    const defaultTemplatePath = join(stateDir, "prompt-template.md");
+    const hasTemplate = existsSync(defaultTemplatePath);
+
+    if (!hasTasksFile && !hasTemplate && !promptTemplatePath) {
+      console.error("Error: No prompt provided and no .ralph/ project detected.");
+      console.error("Run 'ralph --init' to initialize a project, or provide a prompt.");
+      process.exit(1);
+    }
+
+    // Auto-enable tasks mode if a tasks file exists and it wasn't set by config/flag
+    if (hasTasksFile) {
+      tasksMode = true;
+    }
+
+    // Auto-set template if one exists and wasn't already set by config or flag
+    if (!promptTemplatePath && hasTemplate) {
+      promptTemplatePath = defaultTemplatePath;
+    }
+
+    // Use a generic default for {{prompt}} substitution in the template
+    prompt = "Work through all tasks in the task list, completing them one at a time.";
   } else {
     console.error("Error: No prompt provided");
     console.error("Usage: ralph \"Your task description\" [options]");
@@ -1073,7 +1292,9 @@ function clearContext(): void {
  * - {{abort_promise}} - The abort promise text (if configured)
  * - {{task_promise}} - The task promise text (for tasks mode)
  * - {{context}} - Any additional context added mid-loop
- * - {{tasks}} - Task list content (for tasks mode)
+ * - {{tasks}} - Raw task list file content (for tasks mode)
+ * - {{task_section}} - Processed task section with current/next task identification and workflow
+ * - {{current_task}} - Text of the current in-progress or next pending task
  */
 function loadCustomPromptTemplate(templatePath: string, state: RalphState): string | null {
   if (!existsSync(templatePath)) {
@@ -1089,8 +1310,21 @@ function loadCustomPromptTemplate(templatePath: string, state: RalphState): stri
 
     // Load tasks if in tasks mode
     let tasksContent = "";
+    let taskSection = "";
+    let currentTaskText = "";
     if (state.tasksMode && existsSync(tasksPath)) {
       tasksContent = readFileSync(tasksPath, "utf-8");
+      // Generate the processed task section (same as default prompt uses)
+      taskSection = getTasksModeSection(state);
+      // Extract current or next task text
+      const tasks = parseTasks(tasksContent);
+      const currentTask = findCurrentTask(tasks);
+      const nextTask = findNextTask(tasks);
+      if (currentTask) {
+        currentTaskText = currentTask.text;
+      } else if (nextTask) {
+        currentTaskText = nextTask.text;
+      }
     }
 
     // Replace variables
@@ -1103,7 +1337,9 @@ function loadCustomPromptTemplate(templatePath: string, state: RalphState): stri
       .replace(/\{\{abort_promise\}\}/g, state.abortPromise || "")
       .replace(/\{\{task_promise\}\}/g, state.taskPromise)
       .replace(/\{\{context\}\}/g, context)
-      .replace(/\{\{tasks\}\}/g, tasksContent);
+      .replace(/\{\{tasks\}\}/g, tasksContent)
+      .replace(/\{\{task_section\}\}/g, taskSection)
+      .replace(/\{\{current_task\}\}/g, currentTaskText);
 
     return template;
   } catch (err) {
@@ -1531,11 +1767,11 @@ async function streamProcessOutput(
   };
 
   const streamText = async (
-    stream: ReadableStream<Uint8Array> | null,
+    stream: ReadableStream<Uint8Array> | number | null | undefined,
     onText: (chunk: string) => void,
     isError: boolean,
   ) => {
-    if (!stream) return;
+    if (!stream || typeof stream === "number") return;
     const reader = stream.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1865,12 +2101,12 @@ async function runRalphLoop(): Promise<void> {
 
     const usingRotation = !!(state.rotation && state.rotation.length > 0);
     const rotationIndex = usingRotation
-      ? ((state.rotationIndex ?? 0) % state.rotation.length + state.rotation.length) % state.rotation.length
+      ? ((state.rotationIndex ?? 0) % state.rotation!.length + state.rotation!.length) % state.rotation!.length
       : 0;
     let currentAgent: AgentType = state.agent;
     let currentModel = state.model;
     if (usingRotation) {
-      const entry = state.rotation[rotationIndex];
+      const entry = state.rotation![rotationIndex];
       const [entryAgent, entryModel] = entry.split(":");
       currentAgent = entryAgent as AgentType;
       currentModel = entryModel;
@@ -1920,8 +2156,8 @@ async function runRalphLoop(): Promise<void> {
         stderr = streamed.stderrText;
         toolCounts = streamed.toolCounts;
       } else {
-        const stdoutPromise = new Response(proc.stdout).text();
-        const stderrPromise = new Response(proc.stderr).text();
+        const stdoutPromise = new Response(proc.stdout as ReadableStream<Uint8Array>).text();
+        const stderrPromise = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
         [result, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
         toolCounts = collectToolSummaryFromText(`${result}\n${stderr}`, agentConfig);
       }
@@ -2000,17 +2236,28 @@ async function runRalphLoop(): Promise<void> {
 
       saveHistory(history);
 
-      // Show struggle warning if detected
+      // Break loop on no-progress threshold (configurable, 0 = disabled)
       const struggle = history.struggleIndicators;
-      if (state.iteration > 2 && (struggle.noProgressIterations >= 3 || struggle.shortIterations >= 3)) {
-        console.log(`\n⚠️  Potential struggle detected:`);
-        if (struggle.noProgressIterations >= 3) {
-          console.log(`   - No file changes in ${struggle.noProgressIterations} iterations`);
-        }
-        if (struggle.shortIterations >= 3) {
-          console.log(`   - ${struggle.shortIterations} very short iterations`);
-        }
-        console.log(`   💡 Tip: Use 'ralph --add-context "hint"' in another terminal to guide the agent`);
+      if (maxNoProgressIterations > 0 && struggle.noProgressIterations >= maxNoProgressIterations) {
+        console.log(`\n╔══════════════════════════════════════════════════════════════════╗`);
+        console.log(`║  🛑 No-progress limit reached                                    ║`);
+        console.log(`╚══════════════════════════════════════════════════════════════════╝`);
+        console.log(`\n   No file changes detected in ${struggle.noProgressIterations} consecutive iterations.`);
+        console.log(`   Aborting to avoid wasting tokens.`);
+        console.log(`\n   To resume after diagnosing:`);
+        console.log(`   - Add context:  ralph --add-context "hint about what to try"`);
+        console.log(`   - Change limit: ralph run --max-no-progress 5`);
+        console.log(`   - Disable:      ralph run --max-no-progress 0`);
+        clearState();
+        clearHistory();
+        clearContext();
+        process.exit(1);
+      }
+
+      // Warn about short iterations (not a hard stop — could be quick edits)
+      if (struggle.shortIterations >= 3) {
+        console.log(`\n⚠️  ${struggle.shortIterations} very short iterations in a row — agent may be stuck`);
+        console.log(`   💡 Use 'ralph --add-context "hint"' in another terminal to guide it`);
       }
 
       if (currentAgent === "opencode" && detectPlaceholderPluginError(combinedOutput)) {
